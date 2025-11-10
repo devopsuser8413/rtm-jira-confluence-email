@@ -1,128 +1,201 @@
-# RTM → Jenkins → Confluence → Email (Flask Test Results)
 
-Production‑ready pipeline to:
-1) Pull **test result attachments** from Jira RTM (by Issue Key or JQL).
-2) Publish/update a Confluence page and **attach the report**.
-3) Email the report to **multiple recipients** (as attachments) with the Confluence link.
+# 🧩 RTM Jira → Jenkins → Confluence → Email Automation Pipeline
 
-> Works great in Jenkins on Windows or Linux. Uses Python 3.10+.
+This project automates the **end-to-end test result reporting workflow** — fetching RTM test result attachments from Jira, publishing them to Confluence, and sending report notifications to multiple email recipients through Jenkins CI pipeline.
 
 ---
 
-## 📁 Project Structure
+## 🧱 1. Software Installation Requirements
+
+### 🖥️ Local / Jenkins Node Setup
+Ensure the following are installed and configured on the Jenkins node (Windows/Linux):
+
+| Software | Version | Description |
+|-----------|----------|--------------|
+| Python | 3.10+ | Required for automation scripts |
+| Git | latest | For SCM checkout |
+| Jenkins | 2.440+ | CI/CD pipeline engine |
+| Pip | latest | Python dependency management |
+| Virtualenv | latest | Python virtual environment tool |
+
+### 📦 Required Python Packages
+All Python dependencies are declared in `requirements.txt`:
+
+```
+requests==2.32.3
+python-dotenv==1.0.1
+tabulate==0.9.0
+fpdf2==2.8.1
+certifi>=2024.7.4
+```
+
+Install manually for local testing:
+```bash
+pip install -r requirements.txt
+```
+
+---
+
+## 📁 2. Project Structure
 
 ```
 rtm-jira-confluence-email/
-├─ Jenkinsfile
-├─ README.md
-├─ requirements.txt
-├─ .env.example
-├─ report/                 # Downloaded test reports (from Jira) + generated artifacts
-├─ data/                   # Any extra inputs (kept out of VCS by default)
-└─ scripts/
-   ├─ pipeline_main.py     # Orchestrates: Jira fetch → Confluence publish → Email
-   ├─ fetch_jira_attachments.py
-   ├─ confluence_publish.py
-   ├─ send_email.py
-   └─ utils.py
+│
+├── Jenkinsfile
+├── requirements.txt
+├── report/
+│   ├── version.txt
+│   ├── .gitkeep
+│
+├── scripts/
+│   ├── fetch_jira_attachments.py
+│   ├── confluence_publish.py
+│   ├── send_email.py
+│   ├── pipeline_main.py
+│   └── utils.py
+│
+└── .gitignore
 ```
 
----
-
-## 🔧 Prerequisites
-
-- Python **3.10+**
-- A Jira Cloud (or Server/DC) user + API token with **read** access to the RTM issue(s).
-- A Confluence user + API token with **create/edit** permissions on the target space.
-- SMTP account that can send email to your recipients.
-- Jenkins agent with network access to Jira + Confluence + SMTP.
-
-> **Tip (Windows Jenkins):** Python should be on `PATH`. Use a venv inside the workspace (`.venv`).
+### 🧩 Folder Summary
+- `scripts/`: Core automation logic for Jira, Confluence, and Email.
+- `report/`: Generated test results and version tracking.
+- `Jenkinsfile`: Declarative Jenkins pipeline definition.
 
 ---
 
-## 🔐 Configuration
+## 🚀 3. Jenkins Pipeline Stages Overview
 
-You can set everything with **environment variables** in Jenkins or locally via `.env`.
-
-Copy `.env.example` → `.env` and fill in values (or configure Jenkins credentials and map them to env vars).
-
-**Required – Jira**
-- `JIRA_BASE` → e.g., `https://your-domain.atlassian.net`
-- `JIRA_USER` → Jira account email/username
-- `JIRA_TOKEN` → Jira API token (or password for Server/DC)
-- **Choose ONE of the following** (the script will prefer `JIRA_ISSUE_KEY` if both exist):
-  - `JIRA_ISSUE_KEY` → e.g., `RTM-123`
-  - `JIRA_JQL` → e.g., `project = RTM AND issuetype = "Test Plan" ORDER BY created DESC`
-- Optional filters:
-  - `ATTACH_NAME_CONTAINS` → only download attachments whose name contains this
-  - `ATTACH_EXTS` → comma-separated list of file extensions to accept (e.g., `html,pdf,xml`)
-
-**Required – Confluence**
-- `CONFLUENCE_BASE` → e.g., `https://your-domain.atlassian.net/wiki`
-- `CONFLUENCE_USER`
-- `CONFLUENCE_TOKEN`
-- `CONFLUENCE_SPACE` → e.g., `DEMO`
-- `CONFLUENCE_TITLE` → e.g., `Flask Test Result Report`
-- Optional: `CONFLUENCE_PARENT_TITLE` → if you want to create page under a parent
-
-**Required – Email (SMTP)**
-- `SMTP_HOST`, `SMTP_PORT` (587 recommended)
-- `SMTP_USER`, `SMTP_PASS`
-- `REPORT_FROM` → sender email (e.g., `devsecops-bot@yourorg.com`)
-- `REPORT_TO` → comma-separated recipients (e.g., `alice@x.com,bob@x.com`)
-
-**General**
-- `REPORT_DIR` → defaults to `report`
-- `VERSION_FILE` → defaults to `report/version.txt`
+| Stage | Purpose |
+|--------|----------|
+| **Checkout Repository** | Pulls latest code from GitHub |
+| **Set up Python Virtual Environment** | Creates `.venv`, installs dependencies |
+| **Run: Jira → Confluence → Email** | Executes end-to-end automation script |
+| **Archive Reports** | Stores test result files as Jenkins artifacts |
+| **Send Jenkins Email Notification** | Sends additional Jenkins-level notification |
 
 ---
 
-## ▶️ Local Run
+## 🔐 4. API Token & App Password Creation
 
-```bash
-python -m venv .venv
-. .venv/bin/activate   # Windows: .venv\Scripts\activate
-pip install -r requirements.txt
+### ✅ Jira Cloud API Token
+1. Log in to [https://id.atlassian.com/manage-profile/security/api-tokens](https://id.atlassian.com/manage-profile/security/api-tokens)
+2. Click **Create API Token**
+3. Copy and store the token securely
+4. Use the token for Jenkins credentials named `jira-token`
 
-# Create .env from example and fill values
-python scripts/pipeline_main.py
-```
+### ✅ Confluence Cloud API Token
+Confluence and Jira share the same token source.  
+Use the same Atlassian API token for `confluence-token` credentials.
 
-Outputs:
-- Downloads latest matching **test result** attachment(s) from Jira into `report/`.
-- Creates/updates Confluence page and **attaches the files**.
-- Sends **email** with the attachments and the Confluence page link.
-- Increments `report/version.txt` each run.
-
----
-
-## 🤖 Jenkins Pipeline (Declarative)
-
-- Uses a venv, installs requirements, runs the pipeline, archives the report.
-- Designed to work on **Windows or Linux** agents.
-
-> See the `Jenkinsfile` for environment variables and credential bindings.
+### ✅ Gmail App Password (for SMTP)
+1. Visit [https://myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords)
+2. Create an App Password for **Mail** → **Windows Computer**
+3. Use this as `smtp-pass` credential in Jenkins.
 
 ---
 
-## 🧪 Attachment Selection Logic
+## ⚙️ 5. Jenkins Setup Instructions
 
-- If `ATTACH_NAME_CONTAINS` is set, only attachments whose **filename contains** that substring are downloaded.
-- If `ATTACH_EXTS` is set, only those **extensions** will be downloaded.
-- If neither is set, we download **all** attachments found on the issue(s).
+### 🔌 Required Jenkins Plugins
+Install via **Manage Jenkins → Plugins → Available Plugins**:
+- **Pipeline** (Declarative + Groovy)
+- **Email Extension Plugin**
+- **Credentials Binding Plugin**
+- **Git Plugin**
+- **AnsiColor Plugin**
+
+### 🧾 SMTP Configuration
+1. Navigate to **Manage Jenkins → System → Extended E-mail Notification**
+2. Configure:
+   - SMTP Server: `smtp.gmail.com`
+   - Port: `587`
+   - Credentials: `smtp-user` and `smtp-pass`
+   - Use TLS: ✅ checked
+3. Test connection.
+
+### 🔑 Jenkins Credentials Setup
+Create credentials for the following under **Manage Jenkins → Credentials → Global**:
+
+| ID | Type | Example Value |
+|----|------|----------------|
+| `jira-base` | Secret Text | `https://your-domain.atlassian.net` |
+| `jira-user` | Username with Password | `yourname@company.com` |
+| `jira-token` | Secret Text | `JIRA_API_TOKEN` |
+| `confluence-base` | Secret Text | `https://your-domain.atlassian.net/wiki` |
+| `confluence-user` | Username with Password | `yourname@company.com` |
+| `confluence-token` | Secret Text | `CONFLUENCE_API_TOKEN` |
+| `smtp-host` | Secret Text | `smtp.gmail.com` |
+| `smtp-user` | Username with Password | `youremail@gmail.com` |
+| `smtp-pass` | Secret Text | `GMAIL_APP_PASSWORD` |
+| `sender-email` | Secret Text | `youremail@gmail.com` |
+| `multi-receivers` | Secret Text | `devops@company.com,qa@company.com` |
 
 ---
 
-## 🛟 Troubleshooting
+## 🔁 6. Pipeline Stage Explanation
 
-- 401/403: Check API token and permissions in Jira/Confluence.
-- Nothing downloaded: Verify `JIRA_ISSUE_KEY` or `JIRA_JQL`, and filters.
-- Email not delivered: Check SMTP logs, spam policies, and attachment size limits.
-- Confluence page duplicate: Same title allowed per space if different parent; otherwise update occurs.
+### 🧩 Stage 1 – Checkout Repository
+- Pulls the latest code from the GitHub repo using Jenkins credentials.
+- Ensures the latest pipeline and scripts are used.
+
+### 🧩 Stage 2 – Setup Python Virtual Environment
+- Creates `.venv` directory.
+- Installs Python dependencies from `requirements.txt`.
+
+### 🧩 Stage 3 – Run: Jira → Confluence → Email
+- Executes the automation sequence:
+  1. **Fetch from Jira** – Downloads RTM test result attachments.
+  2. **Publish to Confluence** – Creates a new versioned page, uploads attachments, and embeds the attachments macro.
+  3. **Send Email** – Sends test report summary to multiple recipients.
+
+### 🧩 Stage 4 – Archive Reports
+- Archives all generated reports (`.html`, `.pdf`, `.txt`) for future download in Jenkins UI.
+
+### 🧩 Stage 5 – Send Jenkins Email Notification
+- Sends an HTML-formatted email summarizing build status and Confluence page link.
 
 ---
 
-## 📄 License
+## 🧰 7. Troubleshooting & Diagnostics
 
-MIT
+| Issue | Root Cause | Resolution |
+|--------|-------------|-------------|
+| ❌ Attachments not visible in Confluence | Attachments uploaded but macro missing | Ensure `<ac:structured-macro ac:name="attachments">` added in page body |
+| ⚠️ “Not sent to the following valid addresses” | Jenkins SMTP not authenticated | Verify “Use SMTP Authentication” and correct App Password |
+| ❌ Jira 403 Unauthorized | API Token not linked to account | Regenerate Jira token under same Atlassian account |
+| ❌ Confluence 404 | Wrong BASE URL | Use `/wiki` suffix (e.g., `https://yourcompany.atlassian.net/wiki`) |
+| ❌ `requests.exceptions.SSLError` | Certificate verification issue | Add `certifi>=2024.7.4` in requirements.txt |
+| ❌ Python Unicode Errors | Windows terminal encoding | Add `PYTHONUTF8=1` and `PYTHONIOENCODING=utf-8` to Jenkinsfile |
+
+---
+
+## 📊 8. Output Artifacts
+
+After successful pipeline execution:
+- Reports uploaded to Confluence (`Flask Test Result Report vX`)
+- Files visible under “Attachments” section.
+- Emails sent to configured receivers.
+- Artifacts archived under Jenkins “Build Artifacts” tab.
+
+---
+
+## 🧠 9. Versioning
+
+Each pipeline run automatically increments the report version (`v1`, `v2`, …).  
+This is tracked via `report/version.txt`.
+
+---
+
+## 🧩 10. References
+
+- [Jira REST API](https://developer.atlassian.com/cloud/jira/platform/rest/v3/intro/)
+- [Confluence REST API](https://developer.atlassian.com/cloud/confluence/rest/v1/intro/)
+- [Jenkins Pipeline Syntax](https://www.jenkins.io/doc/book/pipeline/syntax/)
+- [Gmail App Password Guide](https://support.google.com/mail/answer/185833)
+
+---
+
+✅ **Author:** DevOpsUser8413  
+📅 **Last Updated:** November 2025  
+🏗️ **Purpose:** Enterprise-grade DevSecOps RTM Integration CI/CD Automation.
