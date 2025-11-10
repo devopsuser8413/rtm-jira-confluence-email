@@ -90,7 +90,7 @@ pipeline {
                     python scripts\\fetch_jira_attachments.py
 
                     rem --- Publish to Confluence (creates new versioned page & attaches reports) ---
-                    python scripts\\publish_to_confluence.py
+                    python scripts\\confluence_publish.py
 
                     rem --- Send SMTP email with attached report ---
                     python scripts\\send_email.py
