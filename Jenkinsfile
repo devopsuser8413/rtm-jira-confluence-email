@@ -11,14 +11,14 @@ pipeline {
         // =============================
         // 🔒 Jira Configuration
         // =============================
-        JIRA_BASE   = credentials('jira-base')       // e.g., https://your-domain.atlassian.net
+        JIRA_BASE   = credentials('jira-base')
         JIRA_USER   = credentials('jira-user')
         JIRA_TOKEN  = credentials('jira-token')
 
         // =============================
         // 📘 Confluence Configuration
         // =============================
-        CONFLUENCE_BASE  = credentials('confluence-base') // e.g., https://your-domain.atlassian.net/wiki
+        CONFLUENCE_BASE  = credentials('confluence-base')
         CONFLUENCE_USER  = credentials('confluence-user')
         CONFLUENCE_TOKEN = credentials('confluence-token')
         CONFLUENCE_SPACE = 'DEMO'
@@ -33,7 +33,7 @@ pipeline {
         SMTP_USER   = credentials('smtp-user')
         SMTP_PASS   = credentials('smtp-pass')
         REPORT_FROM = credentials('sender-email')
-        REPORT_TO   = credentials('multi-receivers') // comma-separated addresses
+        REPORT_TO   = credentials('multi-receivers')
 
         // =============================
         // ⚙️ General Configuration
@@ -46,10 +46,10 @@ pipeline {
     }
 
     parameters {
-        string(name: 'JIRA_ISSUE_KEY', defaultValue: '', description: 'RTM Issue Key (e.g. RTM-123)')
+        string(name: 'JIRA_ISSUE_KEY', defaultValue: '', description: 'RTM Issue Key (e.g., RTM-123)')
         string(name: 'JIRA_JQL', defaultValue: '', description: 'Optional JQL query if ISSUE_KEY not set')
-        string(name: 'ATTACH_NAME_CONTAINS', defaultValue: 'report', description: 'Filter: filename substring (optional)')
-        string(name: 'ATTACH_EXTS', defaultValue: 'html,pdf,xml', description: 'Filter: allowed extensions (optional)')
+        string(name: 'ATTACH_NAME_CONTAINS', defaultValue: 'report', description: 'Filter by filename substring')
+        string(name: 'ATTACH_EXTS', defaultValue: 'html,pdf,xml', description: 'Allowed extensions')
     }
 
     stages {
@@ -85,7 +85,15 @@ pipeline {
                     echo 🚀 Running Automation Pipeline
                     echo =========================================
                     call "%VENV_PATH%\\Scripts\\activate"
-                    python scripts\\pipeline_main.py
+
+                    rem --- Fetch Jira RTM attachments ---
+                    python scripts\\fetch_jira_attachments.py
+
+                    rem --- Publish to Confluence (creates new versioned page & attaches reports) ---
+                    python scripts\\publish_to_confluence.py
+
+                    rem --- Send SMTP email with attached report ---
+                    python scripts\\send_email.py
                 '''
             }
         }
@@ -102,19 +110,20 @@ pipeline {
         stage('Send Jenkins Email Notification') {
             steps {
                 script {
-                    // Send an additional Jenkins-level email (separate from Python SMTP)
                     def recipients = env.REPORT_TO.replace(',', ' ')
+                    def version = readFile(env.VERSION_FILE).trim()
+
                     emailext(
-                        subject: "✅ [Jenkins] Flask Test Report - ${env.BUILD_NUMBER}",
+                        subject: "✅ [Jenkins] Flask Test Report v${version}",
                         to: recipients,
                         from: env.REPORT_FROM,
                         body: """
                             <h2>Automated Test Result Report Published</h2>
                             <p>Dear Team,</p>
-                            <p>The latest <b>Flask Test Result</b> has been successfully published.</p>
-                            <p><b>Confluence Page:</b> ${env.CONFLUENCE_BASE}/display/${env.CONFLUENCE_SPACE}/${env.CONFLUENCE_TITLE.replace(' ', '+')}</p>
+                            <p>The latest <b>Flask Test Result Report</b> (v${version}) has been successfully published.</p>
+                            <p><b>Confluence Page:</b> ${env.CONFLUENCE_BASE}/display/${env.CONFLUENCE_SPACE}/${env.CONFLUENCE_TITLE.replace(' ', '+')}+v${version}</p>
                             <p>Build URL: <a href="${env.BUILD_URL}">${env.BUILD_URL}</a></p>
-                            <p>Artifacts archived under <code>${env.REPORT_DIR}</code>.</p>
+                            <p>Artifacts archived under: <code>${env.REPORT_DIR}</code></p>
                             <br>
                             <p>Regards,<br><b>Jenkins DevSecOps Bot</b></p>
                         """,
@@ -130,7 +139,7 @@ pipeline {
             echo '✅ Pipeline completed successfully — report published and emails sent.'
         }
         failure {
-            echo '❌ Pipeline failed. Check Jenkins console logs for details.'
+            echo '❌ Pipeline failed. Check Jenkins logs for details.'
             script {
                 emailext(
                     subject: "❌ [FAILED] Flask Test Report Pipeline - ${env.BUILD_NUMBER}",

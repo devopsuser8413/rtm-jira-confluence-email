@@ -1,69 +1,35 @@
 import os
 import json
 import logging
-from typing import Optional, Tuple, Dict, Any, List
-
+from typing import Optional, Dict, Any, List
 import requests
-from requests.exceptions import HTTPError
 
 from utils import setup_logging, read_env, get_env
 
 log = logging.getLogger("confluence")
 
 
-# ----------------------------
-# Auth Helper
-# ----------------------------
+# -----------------------------
+#  Authentication Helper
+# -----------------------------
 def _auth(user: str, token: str):
     return (user, token)
 
 
-# ----------------------------
-# Page Lookup Functions
-# ----------------------------
+# -----------------------------
+#  Page Creation / Retrieval
+# -----------------------------
 def get_page_by_title(base: str, user: str, token: str, space: str, title: str) -> Optional[Dict[str, Any]]:
-    """Find page by title inside a space."""
     url = f"{base}/rest/api/content"
     params = {"spaceKey": space, "title": title, "expand": "version,ancestors"}
     r = requests.get(url, params=params, auth=_auth(user, token))
     r.raise_for_status()
-    results = (r.json().get("results", []) or [])
+    results = r.json().get("results", [])
     return results[0] if results else None
 
 
-def get_page_by_title_any_parent(base: str, user: str, token: str, title: str) -> Optional[Dict[str, Any]]:
-    """Find page by title anywhere in site (any parent)."""
-    url = f"{base}/rest/api/content"
-    params = {"title": title, "expand": "version,space,ancestors"}
-    r = requests.get(url, params=params, auth=_auth(user, token))
-    r.raise_for_status()
-    results = (r.json().get("results", []) or [])
-    return results[0] if results else None
-
-
-def get_page_by_title_under_parent(base: str, user: str, token: str, space: str, parent_title: str, title: str) -> Optional[Dict[str, Any]]:
-    """Find page by title under a specific parent."""
-    parent = get_page_by_title(base, user, token, space, parent_title)
-    if not parent:
-        return None
-    parent_id = parent["id"]
-
-    url = f"{base}/rest/api/content/{parent_id}/child/page"
-    params = {"expand": "version"}
-    r = requests.get(url, params=params, auth=_auth(user, token))
-    r.raise_for_status()
-    for child in r.json().get("results", []):
-        if child.get("title") == title:
-            return child
-    return None
-
-
-# ----------------------------
-# Page CRUD Functions
-# ----------------------------
 def create_page(base: str, user: str, token: str, space: str, title: str, body_html: str,
                 parent_title: Optional[str] = None) -> Dict[str, Any]:
-    """Create a new Confluence page, optionally under a parent."""
     payload = {
         "type": "page",
         "title": title,
@@ -77,94 +43,74 @@ def create_page(base: str, user: str, token: str, space: str, title: str, body_h
     url = f"{base}/rest/api/content"
     r = requests.post(url, auth=_auth(user, token), json=payload)
     r.raise_for_status()
+    log.info(f"✅ Created new Confluence page: {title}")
     return r.json()
 
 
-def update_page(base: str, user: str, token: str, page_id: str, title: str, body_html: str, version: int) -> Dict[str, Any]:
-    """Update an existing Confluence page (increments version)."""
-    url = f"{base}/rest/api/content/{page_id}"
-    payload = {
-        "id": page_id,
-        "type": "page",
-        "title": title,
-        "version": {"number": version + 1},
-        "body": {"storage": {"value": body_html, "representation": "storage"}}
-    }
-    r = requests.put(url, auth=_auth(user, token), json=payload)
-    r.raise_for_status()
-    return r.json()
-
-
-# ----------------------------
-# File Attachment Functions
-# ----------------------------
+# -----------------------------
+#  File Attachment Handling
+# -----------------------------
 def attach_file(base: str, user: str, token: str, page_id: str, file_path: str) -> Dict[str, Any]:
-    """Attach or update a file on a Confluence page."""
-    url = f"{base}/rest/api/content/{page_id}/child/attachment"
+    """
+    Upload or update a file on a Confluence page. Works with Confluence Cloud REST API.
+    """
     headers = {"X-Atlassian-Token": "no-check"}
+    auth = _auth(user, token)
     filename = os.path.basename(file_path)
+    url = f"{base}/rest/api/content/{page_id}/child/attachment"
+
+    file_path = file_path.replace("\\", "/")
+
+    # check if file already exists
+    existing = requests.get(url, auth=auth)
+    existing.raise_for_status()
+    attachments = existing.json().get("results", [])
+    existing_attachment = next((a for a in attachments if a["title"] == filename), None)
+
     with open(file_path, "rb") as f:
         files = {"file": (filename, f, "application/octet-stream")}
-        r = requests.post(url, auth=_auth(user, token), headers=headers, files=files)
-        if r.status_code == 409:
-            # File already exists – update it
-            existing = requests.get(url, auth=_auth(user, token))
-            if existing.ok and existing.json().get("results"):
-                attachment_id = existing.json()["results"][0]["id"]
-                update_url = f"{base}/rest/api/content/{page_id}/child/attachment/{attachment_id}/data"
-                r = requests.post(update_url, auth=_auth(user, token), headers=headers, files=files)
-        r.raise_for_status()
-        return r.json()
+        if existing_attachment:
+            attach_id = existing_attachment["id"]
+            update_url = f"{base}/rest/api/content/{page_id}/child/attachment/{attach_id}/data"
+            r = requests.post(update_url, auth=auth, headers=headers, files=files)
+            if r.status_code not in (200, 201):
+                raise Exception(f"Failed to update attachment {filename}: {r.status_code} {r.text}")
+            log.info(f"🔁 Updated existing attachment: {filename}")
+        else:
+            r = requests.post(url, auth=auth, headers=headers, files=files)
+            if r.status_code not in (200, 201):
+                raise Exception(f"Failed to upload new attachment {filename}: {r.status_code} {r.text}")
+            log.info(f"✅ Uploaded new attachment: {filename}")
+
+    return {"file": filename, "status": "uploaded"}
 
 
-def page_url(base: str, page_id: str, space: Optional[str] = None) -> str:
-    """Return formatted Confluence Cloud page URL."""
-    if space:
-        return f"{base}/spaces/{space}/pages/{page_id}"
-    return f"{base}/spaces?@pageId={page_id}"
+# -----------------------------
+#  URL and Version Utilities
+# -----------------------------
+def page_url(base: str, page_id: str, space: str) -> str:
+    return f"{base}/spaces/{space}/pages/{page_id}"
 
 
-# ----------------------------
-# Main Upsert Function
-# ----------------------------
-def upsert_page_with_attachments(base: str, user: str, token: str,
-                                 space: str, title: str, body_html: str,
-                                 attachments: List[str], parent_title: Optional[str] = None) -> Tuple[str, str]:
-    """Create or update a page, then attach all report files."""
-    page = None
-    if parent_title:
-        page = get_page_by_title_under_parent(base, user, token, space, parent_title, title)
-    if not page:
-        page = get_page_by_title(base, user, token, space, title)
-
-    # Create or update
-    if page:
-        updated = update_page(base, user, token, page["id"], title, body_html, page["version"]["number"])
-        pid = updated["id"]
-        log.info(f"Updated existing Confluence page: {title}")
-    else:
-        created = create_page(base, user, token, space, title, body_html, parent_title=parent_title)
-        pid = created["id"]
-        log.info(f"Created new Confluence page: {title}")
-
-    link = page_url(base, pid, space)
-
-    # Attach files
-    for fpath in attachments:
-        try:
-            attach_file(base, user, token, pid, fpath)
-            log.info(f"✅ Attached file: {os.path.basename(fpath)}")
-        except HTTPError as e:
-            log.warning(f"❌ Attach failed for {fpath}: {e.response.status_code} {e.response.text}")
-        except Exception as e:
-            log.warning(f"❌ Attach failed for {fpath}: {e}")
-
-    return pid, link
+def next_version_number(version_file: str = "report/version.txt") -> int:
+    os.makedirs(os.path.dirname(version_file), exist_ok=True)
+    if os.path.exists(version_file):
+        with open(version_file) as f:
+            try:
+                return int(f.read().strip()) + 1
+            except ValueError:
+                pass
+    return 1
 
 
-# ----------------------------
-# Entry Point
-# ----------------------------
+def write_version(version_file: str, version: int):
+    with open(version_file, "w") as f:
+        f.write(str(version))
+
+
+# -----------------------------
+#  Main Entry Point
+# -----------------------------
 def main():
     setup_logging()
     read_env()
@@ -176,25 +122,35 @@ def main():
     title = get_env("CONFLUENCE_TITLE", required=True)
     parent_title = os.getenv("CONFLUENCE_PARENT_TITLE", "").strip() or None
 
-    # Customizable page content
+    report_dir = os.getenv("REPORT_DIR", "report")
+    version_file = os.path.join(report_dir, "version.txt")
+
+    version = next_version_number(version_file)
+    write_version(version_file, version)
+    versioned_title = f"{title} v{version}"
+
     body_html = (
-        "<p>Automated upload of Flask Test Result Report.</p>"
-        "<p>Attached below are the generated test result files.</p>"
+        f"<p><b>Automated Test Report</b> for version <b>v{version}</b>.</p>"
+        f"<p>Generated by Jenkins CI pipeline.</p>"
+        f"<p>Attached below are the test result files.</p>"
     )
 
-    # Collect attachments
-    report_dir = os.getenv("REPORT_DIR", "report")
-    attachments = []
+    # create page
+    created = create_page(base, user, token, space, versioned_title, body_html, parent_title)
+    page_id = created["id"]
+    link = page_url(base, page_id, space)
+
+    # attach files
     if os.path.isdir(report_dir):
         for name in os.listdir(report_dir):
             fpath = os.path.join(report_dir, name)
             if os.path.isfile(fpath) and not name.endswith(".gitkeep"):
-                attachments.append(fpath)
+                try:
+                    attach_file(base, user, token, page_id, fpath)
+                except Exception as e:
+                    log.warning(f"❌ Attach failed for {fpath}: {e}")
 
-    # Upsert page and attach files
-    pid, link = upsert_page_with_attachments(base, user, token, space, title, body_html, attachments, parent_title)
-
-    print(json.dumps({"page_id": pid, "link": link}, indent=2))
+    print(json.dumps({"page_id": page_id, "link": link, "version": version}, indent=2))
 
 
 if __name__ == "__main__":
